@@ -11,7 +11,7 @@ function readBody(req) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  if (env.XAI_API_KEY) process.env.XAI_API_KEY = env.XAI_API_KEY;
+  if (env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = env.OPENAI_API_KEY;
 
   return {
     plugins: [
@@ -19,17 +19,19 @@ export default defineConfig(({ mode }) => {
       {
         name: "dev-api",
         configureServer(server) {
-          server.middlewares.use("/api/voice-chat", async (req, res) => {
+          server.middlewares.use("/api/realtime-session", async (req, res) => {
             if (req.method !== "POST") {
               res.statusCode = 405;
               res.end("Method not allowed");
               return;
             }
             try {
-              const body = JSON.parse(await readBody(req));
-              const { default: handler } = await import("./api/voice-chat.js");
+              await readBody(req);
+              const { default: handler } = await import(
+                "./api/realtime-session.js"
+              );
               await handler(
-                { method: "POST", body },
+                { method: "POST" },
                 {
                   status: (code) => ({
                     json: (data) => {
@@ -41,7 +43,7 @@ export default defineConfig(({ mode }) => {
                 },
               );
             } catch (err) {
-              console.error("[dev /api/voice-chat]", err);
+              console.error("[dev /api/realtime-session]", err);
               res.statusCode = 500;
               res.setHeader("Content-Type", "application/json");
               res.end(JSON.stringify({ error: "dev proxy error" }));

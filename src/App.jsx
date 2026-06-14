@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 
 const STATUS_LABEL = {
   ready: "Pronto",
@@ -8,55 +8,32 @@ const STATUS_LABEL = {
   error: "Errore",
 };
 
-const SpeechRecognition =
-  typeof window !== "undefined" &&
-  (window.SpeechRecognition || window.webkitSpeechRecognition);
-
-function speak(text, voice, onEnd) {
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = "it-IT";
-  utterance.rate = 1.05;
-  utterance.pitch = 1.15;
-  if (voice) utterance.voice = voice;
-  utterance.onend = onEnd;
-  utterance.onerror = onEnd;
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(utterance);
-}
-
 export default function App() {
   const [status, setStatus] = useState("ready");
   const [errorMsg, setErrorMsg] = useState("");
-  const [transcript, setTranscript] = useState("");
   const [fionaText, setFionaText] = useState("");
-  const [listening, setListening] = useState(false);
-  const messagesRef = useRef([]);
-  const recognitionRef = useRef(null);
-  const activeRef = useRef(false);
-  const voiceRef = useRef(null);
-
-  useEffect(() => {
-    const loadVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      const italian =
-        voices.find((v) => v.lang === "it-IT" && v.name.includes("Google")) ||
-        voices.find((v) => v.lang === "it-IT") ||
-        voices.find((v) => v.lang.startsWith("it"));
-      if (italian) voiceRef.current = italian;
-    };
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
-  }, []);
+  const pcRef = useRef(null);
+  const dcRef = useRef(null);
+  const streamRef = useRef(null);
+  const audioRef = useRef(null);
 
   const cleanup = useCallback(() => {
-    activeRef.current = false;
-    if (recognitionRef.current) {
-      recognitionRef.current.abort();
-      recognitionRef.current = null;
+    dcRef.current?.close();
+    dcRef.current = null;
+    pcRef.current?.close();
+    pcRef.current = null;
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    if (audioRef.current) {
+      audioRef.current.srcObject = null;
+      audioRef.current = null;
     }
-    window.speechSynthesis.cancel();
-    setListening(false);
   }, []);
+
+  const endCall = useCallback(() => {
+    cleanup();
+    setStatus("ended");
+  }, [cleanup]);
 
   const showError = useCallback(
     (msg) => {
@@ -67,114 +44,120 @@ export default function App() {
     [cleanup],
   );
 
-  const endCall = useCallback(() => {
-    cleanup();
-    setStatus("ended");
-  }, [cleanup]);
-
-  const startListening = useCallback(() => {
-    if (!activeRef.current || !SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = "it-IT";
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.continuous = false;
-    recognitionRef.current = recognition;
-
-    recognition.onstart = () => setListening(true);
-
-    recognition.onresult = async (event) => {
-      setListening(false);
-      const userText = event.results[0][0].transcript;
-      setTranscript(userText);
-
-      messagesRef.current.push({ role: "user", content: userText });
-
-      try {
-        const res = await fetch("/api/voice-chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: messagesRef.current }),
-        });
-
-        if (!res.ok) throw new Error(`Errore server: ${res.status}`);
-        const data = await res.json();
-        const reply = data.reply || "Bau!";
-
-        messagesRef.current.push({ role: "assistant", content: reply });
-        setFionaText(reply);
-
-        speak(reply, voiceRef.current, () => {
-          if (activeRef.current) startListening();
-        });
-      } catch (err) {
-        showError("Errore nella risposta: " + err.message);
-      }
-    };
-
-    recognition.onerror = (e) => {
-      setListening(false);
-      if (e.error === "no-speech" && activeRef.current) {
-        startListening();
-        return;
-      }
-      if (e.error === "aborted") return;
-      console.error("Speech recognition error:", e.error);
-    };
-
-    recognition.onend = () => {
-      setListening(false);
-    };
-
-    recognition.start();
-  }, [showError]);
-
   const startCall = useCallback(async () => {
-    if (!SpeechRecognition) {
-      showError(
-        "Il tuo browser non supporta il riconoscimento vocale. Usa Chrome.",
-      );
-      return;
-    }
-
     setStatus("connecting");
     setErrorMsg("");
-    setTranscript("");
     setFionaText("");
-    messagesRef.current = [];
 
     try {
-      const res = await fetch("/api/voice-chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [] }),
-      });
-
+      // 1. Get ephemeral token from backend
+      const res = await fetch("/api/realtime-session", { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(
-          body.error ||
-            `Errore server ${res.status}. Hai configurato XAI_API_KEY su Vercel?`,
+        throw new Error(body.error || `Errore server ${res.status}`);
+      }
+      const { clientSecret } = await res.json();
+      if (!clientSecret) throw new Error("Token non ricevuto. Controlla OPENAI_API_KEY su Vercel.");
+
+      // 2. Setup WebRTC peer connection
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
+
+      // 3. Get microphone
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      pc.addTrack(stream.getTracks()[0]);
+
+      // 4. Setup remote audio (Fiona's voice)
+      const audioEl = document.createElement("audio");
+      audioEl.autoplay = true;
+      audioRef.current = audioEl;
+      pc.ontrack = (e) => {
+        audioEl.srcObject = e.streams[0];
+      };
+
+      // 5. Create data channel for events
+      const dc = pc.createDataChannel("oai-events");
+      dcRef.current = dc;
+
+      dc.onopen = () => {
+        setStatus("active");
+
+        // Trigger Fiona's greeting
+        dc.send(
+          JSON.stringify({
+            type: "response.create",
+            response: {
+              modalities: ["audio", "text"],
+              instructions:
+                "Saluta il chiamante con il tuo saluto di benvenuto a Casa Gay. Parla in italiano.",
+            },
+          }),
         );
+      };
+
+      dc.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+
+          if (msg.type === "response.audio_transcript.done") {
+            setFionaText(msg.transcript || "");
+          }
+
+          if (msg.type === "error") {
+            const errMsg =
+              msg.error?.message || JSON.stringify(msg.error) || "Errore";
+            console.error("Realtime error:", errMsg);
+            if (msg.error?.code === "session_expired") {
+              endCall();
+            }
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
+
+      dc.onclose = () => {
+        if (pcRef.current) endCall();
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (
+          pc.iceConnectionState === "failed" ||
+          pc.iceConnectionState === "disconnected"
+        ) {
+          endCall();
+        }
+      };
+
+      // 6. Create SDP offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      // 7. Send offer to OpenAI and get answer
+      const sdpRes = await fetch(
+        "https://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview-2024-12-17",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${clientSecret}`,
+            "Content-Type": "application/sdp",
+          },
+          body: offer.sdp,
+        },
+      );
+
+      if (!sdpRes.ok) {
+        const errText = await sdpRes.text();
+        throw new Error(`Connessione OpenAI fallita: ${sdpRes.status} ${errText.slice(0, 100)}`);
       }
 
-      const data = await res.json();
-      const greeting = data.reply;
-
-      messagesRef.current.push({ role: "assistant", content: greeting });
-      setFionaText(greeting);
-
-      activeRef.current = true;
-      setStatus("active");
-
-      speak(greeting, voiceRef.current, () => {
-        if (activeRef.current) startListening();
-      });
+      const answerSdp = await sdpRes.text();
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
     } catch (err) {
       showError(err.message);
     }
-  }, [showError, startListening]);
+  }, [cleanup, endCall, showError]);
 
   const isActive = status === "active" || status === "connecting";
 
@@ -194,7 +177,7 @@ export default function App() {
         Fiona risponde mentre la famiglia non è in casa.
       </p>
 
-      <div className="mb-6 text-sm font-medium">
+      <div className="mb-4 text-sm font-medium">
         <span
           className={`inline-flex items-center gap-2 px-4 py-2 rounded-full ${
             status === "active"
@@ -227,27 +210,11 @@ export default function App() {
         </div>
       )}
 
-      {status === "active" && (
-        <div className="mb-6 max-w-md w-full space-y-3">
-          {fionaText && (
-            <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-3">
-              <p className="text-purple-200 text-sm">
-                <span className="font-semibold">Fiona:</span> {fionaText}
-              </p>
-            </div>
-          )}
-          {transcript && (
-            <div className="bg-white/5 border border-white/10 rounded-lg p-3">
-              <p className="text-gray-300 text-sm">
-                <span className="font-semibold">Tu:</span> {transcript}
-              </p>
-            </div>
-          )}
-          {listening && (
-            <p className="text-yellow-400 text-xs text-center animate-pulse">
-              Ti ascolto...
-            </p>
-          )}
+      {status === "active" && fionaText && (
+        <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-3 mb-4 max-w-md w-full">
+          <p className="text-purple-200 text-sm">
+            <span className="font-semibold">Fiona:</span> {fionaText}
+          </p>
         </div>
       )}
 
