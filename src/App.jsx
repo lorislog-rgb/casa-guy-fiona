@@ -48,11 +48,17 @@ function decodeBase64(base64) {
 export default function App() {
   const [status, setStatus] = useState("ready");
   const [errorMsg, setErrorMsg] = useState("");
+  const [debugLog, setDebugLog] = useState("");
   const wsRef = useRef(null);
   const audioCtxRef = useRef(null);
   const streamRef = useRef(null);
   const workletRef = useRef(null);
   const nextPlayTimeRef = useRef(0);
+
+  const log = (msg) => {
+    console.log("[Fiona]", msg);
+    setDebugLog((prev) => prev + "\n" + msg);
+  };
 
   const cleanup = useCallback(() => {
     wsRef.current?.close();
@@ -73,6 +79,7 @@ export default function App() {
 
   const showError = useCallback(
     (msg) => {
+      log("ERRORE: " + msg);
       cleanup();
       setErrorMsg(msg);
       setStatus("error");
@@ -83,21 +90,27 @@ export default function App() {
   const startCall = useCallback(async () => {
     setStatus("connecting");
     setErrorMsg("");
+    setDebugLog("");
 
     try {
+      log("Richiedo chiave API...");
       const res = await fetch("/api/voice-session", { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Server error ${res.status}`);
+        throw new Error(
+          body.error || `Errore server ${res.status}. Hai configurato XAI_API_KEY su Vercel?`,
+        );
       }
-      const { apiKey } = await res.json();
-      if (!apiKey) throw new Error("API key non configurata su Vercel");
+      const data = await res.json();
+      if (!data.apiKey) throw new Error("Chiave API mancante. Configura XAI_API_KEY su Vercel.");
+      log("Chiave API ricevuta");
 
+      log("Inizializzo audio...");
       const audioCtx = new AudioContext({ sampleRate: 24000 });
       audioCtxRef.current = audioCtx;
-
       await audioCtx.audioWorklet.addModule("/pcm-processor.js");
 
+      log("Richiedo microfono...");
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: { ideal: 24000 },
@@ -107,34 +120,38 @@ export default function App() {
         },
       });
       streamRef.current = stream;
+      log("Microfono attivo");
 
-      const wsUrl = `wss://api.x.ai/v1/realtime?model=grok-3-fast-latest`;
-      const ws = new WebSocket(wsUrl, [
-        "realtime",
-        `openai-insecure-api-key.${apiKey}`,
-      ]);
+      log("Connessione a xAI Realtime API...");
+      const ws = new WebSocket(
+        "wss://api.x.ai/v1/realtime?model=grok-voice-latest",
+        ["realtime", `openai-insecure-api-key.${data.apiKey}`],
+      );
       wsRef.current = ws;
 
       const connectTimeout = setTimeout(() => {
         if (ws.readyState !== WebSocket.OPEN) {
-          showError(
-            "Connessione scaduta. Controlla la chiave XAI_API_KEY su Vercel.",
-          );
+          showError("Connessione scaduta dopo 10s. La chiave API potrebbe non essere valida.");
         }
       }, 10000);
 
       ws.onopen = () => {
         clearTimeout(connectTimeout);
+        log("WebSocket connesso! Configuro sessione...");
 
         ws.send(
           JSON.stringify({
             type: "session.update",
             session: {
-              voice: "Cove",
-              system_prompt: FIONA_INSTRUCTIONS,
+              voice: "Eve",
+              instructions: FIONA_INSTRUCTIONS,
               turn_detection: { type: "server_vad" },
-              input_audio_format: "pcm16",
-              output_audio_format: "pcm16",
+              tools: [],
+              input_audio_transcription: { model: "grok-2-audio" },
+              audio: {
+                input: { format: { type: "audio/pcm", rate: 24000 } },
+                output: { format: { type: "audio/pcm", rate: 24000 } },
+              },
             },
           }),
         );
@@ -172,23 +189,28 @@ export default function App() {
         worklet.connect(silentGain);
         silentGain.connect(audioCtx.destination);
 
+        log("Chat vocale attiva!");
         setStatus("active");
       };
 
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        const msg = JSON.parse(event.data);
 
-        if (data.type === "input_audio_buffer.speech_started") {
+        if (msg.type === "session.created") {
+          log("Sessione creata: " + msg.session?.id);
+          return;
+        }
+
+        if (msg.type === "input_audio_buffer.speech_started") {
           ws.send(JSON.stringify({ type: "response.cancel" }));
           return;
         }
 
         if (
-          data.type === "response.audio.delta" ||
-          data.type === "response.output_audio.delta"
+          msg.type === "response.audio.delta" ||
+          msg.type === "response.output_audio.delta"
         ) {
-          const pcmB64 = data.delta;
-          const bytes = decodeBase64(pcmB64);
+          const bytes = decodeBase64(msg.delta);
           const int16 = new Int16Array(bytes.buffer);
           const float32 = int16ToFloat(int16);
 
@@ -205,15 +227,18 @@ export default function App() {
           return;
         }
 
-        if (data.type === "error") {
-          showError(data.error?.message || data.message || "Errore dal server");
+        if (msg.type === "error") {
+          const errText =
+            msg.error?.message || msg.message || JSON.stringify(msg);
+          showError("Errore xAI: " + errText);
+          return;
         }
       };
 
-      ws.onerror = () => {
+      ws.onerror = (e) => {
         clearTimeout(connectTimeout);
         showError(
-          "Connessione WebSocket fallita. Verifica che XAI_API_KEY sia corretta.",
+          "WebSocket rifiutato. Possibili cause: chiave API non valida, o il tuo account xAI non ha accesso alla Realtime API.",
         );
       };
 
@@ -222,7 +247,7 @@ export default function App() {
         if (wsRef.current) {
           if (e.code !== 1000) {
             showError(
-              `Connessione chiusa (codice ${e.code}). Verifica la chiave API.`,
+              `Connessione chiusa dal server (codice ${e.code}, motivo: ${e.reason || "nessuno"}). Controlla la chiave API.`,
             );
           } else {
             setStatus("ended");
@@ -232,7 +257,7 @@ export default function App() {
     } catch (err) {
       showError(err.message);
     }
-  }, [cleanup, endCall, showError]);
+  }, [cleanup, showError]);
 
   const isActive = status === "active" || status === "connecting";
 
@@ -259,11 +284,9 @@ export default function App() {
               ? "bg-green-500/20 text-green-400"
               : status === "connecting"
                 ? "bg-yellow-500/20 text-yellow-400"
-                : status === "error"
+                : status === "error" || status === "ended"
                   ? "bg-red-500/20 text-red-400"
-                  : status === "ended"
-                    ? "bg-red-500/20 text-red-400"
-                    : "bg-white/10 text-gray-300"
+                  : "bg-white/10 text-gray-300"
           }`}
         >
           <span
@@ -282,9 +305,9 @@ export default function App() {
       </div>
 
       {errorMsg && (
-        <p className="text-red-400 text-sm text-center mb-4 max-w-md">
-          {errorMsg}
-        </p>
+        <div className="bg-red-900/40 border border-red-500/50 rounded-lg p-4 mb-4 max-w-md">
+          <p className="text-red-300 text-sm text-center">{errorMsg}</p>
+        </div>
       )}
 
       <button
@@ -298,6 +321,12 @@ export default function App() {
       >
         {isActive ? "Termina" : "Chiama Fiona"}
       </button>
+
+      {debugLog && (
+        <pre className="mt-8 text-xs text-gray-500 max-w-md text-left whitespace-pre-wrap">
+          {debugLog}
+        </pre>
+      )}
     </div>
   );
 }
