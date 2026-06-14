@@ -33,7 +33,7 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini-realtime-preview-2024-12-17",
+        model: "gpt-4o-mini-realtime-preview",
         voice: "shimmer",
         instructions: FIONA_INSTRUCTIONS,
         turn_detection: {
@@ -49,7 +49,7 @@ export default async function handler(req, res) {
       const err = await response.text();
       console.error("OpenAI session error:", response.status, err);
       res.status(502).json({
-        error: `OpenAI API error ${response.status}. Verifica che OPENAI_API_KEY sia valida.`,
+        error: `OpenAI API error ${response.status}: ${err.slice(0, 200)}`,
       });
       return;
     }
