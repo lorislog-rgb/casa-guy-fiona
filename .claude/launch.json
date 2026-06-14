@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "casa-fiona",
+      "runtimeExecutable": "/usr/local/opt/node@20/bin/node",
+      "runtimeArgs": ["node_modules/.bin/vite", "--port", "3000"],
+      "port": 3000
+    }
+  ]
+}
