@@ -11,7 +11,9 @@ function readBody(req) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  if (env.GEMINI_API_KEY) process.env.GEMINI_API_KEY = env.GEMINI_API_KEY;
+  for (const k of ["ELEVENLABS_AGENT_ID", "ELEVENLABS_API_KEY"]) {
+    if (env[k]) process.env[k] = env[k];
+  }
 
   return {
     plugins: [
@@ -19,7 +21,7 @@ export default defineConfig(({ mode }) => {
       {
         name: "dev-api",
         configureServer(server) {
-          server.middlewares.use("/api/gemini-token", async (req, res) => {
+          server.middlewares.use("/api/elevenlabs-config", async (req, res) => {
             if (req.method !== "POST") {
               res.statusCode = 405;
               res.end("Method not allowed");
@@ -28,7 +30,7 @@ export default defineConfig(({ mode }) => {
             try {
               await readBody(req);
               const { default: handler } = await import(
-                "./api/gemini-token.js"
+                "./api/elevenlabs-config.js"
               );
               await handler(
                 { method: "POST" },
@@ -43,7 +45,7 @@ export default defineConfig(({ mode }) => {
                 },
               );
             } catch (err) {
-              console.error("[dev /api/gemini-token]", err);
+              console.error("[dev /api/elevenlabs-config]", err);
               res.statusCode = 500;
               res.setHeader("Content-Type", "application/json");
               res.end(JSON.stringify({ error: "dev proxy error" }));
