@@ -86,20 +86,27 @@ export default function App() {
       dcRef.current = dc;
 
       dc.onopen = () => {
-        // Configure Fiona's personality
+        // Configure Fiona's personality (GA Realtime API shape)
         dc.send(
           JSON.stringify({
             type: "session.update",
             session: {
-              voice: "shimmer",
+              type: "realtime",
               instructions: FIONA_INSTRUCTIONS,
-              turn_detection: {
-                type: "server_vad",
-                threshold: 0.5,
-                prefix_padding_ms: 300,
-                silence_duration_ms: 500,
+              audio: {
+                input: {
+                  turn_detection: {
+                    type: "server_vad",
+                    threshold: 0.5,
+                    prefix_padding_ms: 300,
+                    silence_duration_ms: 500,
+                  },
+                  transcription: { model: "whisper-1" },
+                },
+                output: {
+                  voice: "shimmer",
+                },
               },
-              input_audio_transcription: { model: "whisper-1" },
             },
           }),
         );
@@ -109,9 +116,8 @@ export default function App() {
           JSON.stringify({
             type: "response.create",
             response: {
-              modalities: ["audio", "text"],
               instructions:
-                "Saluta il chiamante. Sei Fiona, il cane di Casa Gay. Parla in italiano.",
+                "Saluta il chiamante con il tuo saluto di benvenuto. Sei Fiona, il cane di Casa Gay. Parla in italiano.",
             },
           }),
         );
@@ -123,7 +129,10 @@ export default function App() {
         try {
           const msg = JSON.parse(e.data);
 
-          if (msg.type === "response.audio_transcript.done") {
+          if (
+            msg.type === "response.audio_transcript.done" ||
+            msg.type === "response.output_audio_transcript.done"
+          ) {
             setFionaText(msg.transcript || "");
           }
 
@@ -131,6 +140,7 @@ export default function App() {
             const errMsg =
               msg.error?.message || JSON.stringify(msg.error) || "Errore";
             console.error("Realtime error:", errMsg);
+            setErrorMsg("Fiona dice: " + errMsg);
           }
         } catch {
           // ignore
