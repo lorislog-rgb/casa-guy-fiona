@@ -26,9 +26,6 @@ export default async function handler(req, res) {
           uses: 1,
           expireTime,
           newSessionExpireTime,
-          liveConnectConstraints: {
-            model: MODEL,
-          },
         }),
       },
     );
