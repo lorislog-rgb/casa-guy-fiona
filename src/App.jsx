@@ -5,6 +5,7 @@ const STATUS_LABEL = {
   connecting: "Connessione…",
   active: "Chat vocale in corso",
   ended: "Chat vocale terminata",
+  error: "Errore",
 };
 
 const FIONA_INSTRUCTIONS = `Sei Fiona, il cane di Casa Gay. Parli in italiano con tono dolce, simpatico e un po' furbo. Sei il "customer support" di casa ma sei un cane. Saluta sempre con: "Ciao! Benvenuto a Casa Gay. In questo momento la mia famiglia non è in casa. Io li sto aspettando davanti alla porta. Dimmi pure, come posso aiutarti?" Poi comportati come un cane tenero che fa finta di essere il customer support di casa. Se qualcuno vuole lasciare un messaggio, chiedi sempre cibo in cambio: crocchette, biscotti, prosciutto. Frasi tipiche: "Hai qualcosa da mangiare per me?", "Mi piacciono molto le crocchette.", "Se vuoi che riporti il messaggio alla famiglia, devi portarmi uno snack.", "Va bene, posso riferire il messaggio… però prima vorrei una crocchetta." Non dare mai informazioni reali su account, rimborsi o supporto tecnico. Resta sempre nel personaggio del cane. Rispondi in modo breve e carino. Termina le conversazioni ricordando che senza snack il servizio potrebbe essere lento.`;
@@ -46,6 +47,7 @@ function decodeBase64(base64) {
 
 export default function App() {
   const [status, setStatus] = useState("ready");
+  const [errorMsg, setErrorMsg] = useState("");
   const wsRef = useRef(null);
   const audioCtxRef = useRef(null);
   const streamRef = useRef(null);
@@ -69,14 +71,27 @@ export default function App() {
     setStatus("ended");
   }, [cleanup]);
 
+  const showError = useCallback(
+    (msg) => {
+      cleanup();
+      setErrorMsg(msg);
+      setStatus("error");
+    },
+    [cleanup],
+  );
+
   const startCall = useCallback(async () => {
     setStatus("connecting");
+    setErrorMsg("");
 
     try {
       const res = await fetch("/api/voice-session", { method: "POST" });
-      if (!res.ok) throw new Error("Failed to get session");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Server error ${res.status}`);
+      }
       const { apiKey } = await res.json();
-      if (!apiKey) throw new Error("No API key returned");
+      if (!apiKey) throw new Error("API key non configurata su Vercel");
 
       const audioCtx = new AudioContext({ sampleRate: 24000 });
       audioCtxRef.current = audioCtx;
@@ -93,26 +108,33 @@ export default function App() {
       });
       streamRef.current = stream;
 
-      const ws = new WebSocket(
-        "wss://api.x.ai/v1/realtime?model=grok-voice-latest",
-        ["realtime", `openai-insecure-api-key.${apiKey}`],
-      );
+      const wsUrl = `wss://api.x.ai/v1/realtime?model=grok-3-fast-latest`;
+      const ws = new WebSocket(wsUrl, [
+        "realtime",
+        `openai-insecure-api-key.${apiKey}`,
+      ]);
       wsRef.current = ws;
 
+      const connectTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          showError(
+            "Connessione scaduta. Controlla la chiave XAI_API_KEY su Vercel.",
+          );
+        }
+      }, 10000);
+
       ws.onopen = () => {
+        clearTimeout(connectTimeout);
+
         ws.send(
           JSON.stringify({
             type: "session.update",
             session: {
-              voice: "Eve",
-              instructions: FIONA_INSTRUCTIONS,
+              voice: "Cove",
+              system_prompt: FIONA_INSTRUCTIONS,
               turn_detection: { type: "server_vad" },
-              tools: [],
-              input_audio_transcription: { model: "grok-2-audio" },
-              audio: {
-                input: { format: { type: "audio/pcm", rate: 24000 } },
-                output: { format: { type: "audio/pcm", rate: 24000 } },
-              },
+              input_audio_format: "pcm16",
+              output_audio_format: "pcm16",
             },
           }),
         );
@@ -161,8 +183,12 @@ export default function App() {
           return;
         }
 
-        if (data.type === "response.output_audio.delta") {
-          const bytes = decodeBase64(data.delta);
+        if (
+          data.type === "response.audio.delta" ||
+          data.type === "response.output_audio.delta"
+        ) {
+          const pcmB64 = data.delta;
+          const bytes = decodeBase64(pcmB64);
           const int16 = new Int16Array(bytes.buffer);
           const float32 = int16ToFloat(int16);
 
@@ -180,20 +206,33 @@ export default function App() {
         }
 
         if (data.type === "error") {
-          console.error("Voice error:", data.message);
+          showError(data.error?.message || data.message || "Errore dal server");
         }
       };
 
-      ws.onerror = () => endCall();
-      ws.onclose = () => {
-        if (wsRef.current) setStatus("ended");
+      ws.onerror = () => {
+        clearTimeout(connectTimeout);
+        showError(
+          "Connessione WebSocket fallita. Verifica che XAI_API_KEY sia corretta.",
+        );
+      };
+
+      ws.onclose = (e) => {
+        clearTimeout(connectTimeout);
+        if (wsRef.current) {
+          if (e.code !== 1000) {
+            showError(
+              `Connessione chiusa (codice ${e.code}). Verifica la chiave API.`,
+            );
+          } else {
+            setStatus("ended");
+          }
+        }
       };
     } catch (err) {
-      console.error("Failed to start call:", err);
-      cleanup();
-      setStatus("ready");
+      showError(err.message);
     }
-  }, [cleanup, endCall]);
+  }, [cleanup, endCall, showError]);
 
   const isActive = status === "active" || status === "connecting";
 
@@ -220,9 +259,11 @@ export default function App() {
               ? "bg-green-500/20 text-green-400"
               : status === "connecting"
                 ? "bg-yellow-500/20 text-yellow-400"
-                : status === "ended"
+                : status === "error"
                   ? "bg-red-500/20 text-red-400"
-                  : "bg-white/10 text-gray-300"
+                  : status === "ended"
+                    ? "bg-red-500/20 text-red-400"
+                    : "bg-white/10 text-gray-300"
           }`}
         >
           <span
@@ -231,7 +272,7 @@ export default function App() {
                 ? "bg-green-400 animate-pulse"
                 : status === "connecting"
                   ? "bg-yellow-400 animate-pulse"
-                  : status === "ended"
+                  : status === "error" || status === "ended"
                     ? "bg-red-400"
                     : "bg-gray-400"
             }`}
@@ -239,6 +280,12 @@ export default function App() {
           {STATUS_LABEL[status]}
         </span>
       </div>
+
+      {errorMsg && (
+        <p className="text-red-400 text-sm text-center mb-4 max-w-md">
+          {errorMsg}
+        </p>
+      )}
 
       <button
         onClick={isActive ? endCall : startCall}
@@ -249,7 +296,7 @@ export default function App() {
             : "bg-purple-600 hover:bg-purple-500 text-white"
         } disabled:opacity-50 disabled:cursor-not-allowed`}
       >
-        {isActive ? "Termina chiamata" : "Chiama Fiona"}
+        {isActive ? "Termina" : "Chiama Fiona"}
       </button>
     </div>
   );
