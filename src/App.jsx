@@ -233,7 +233,7 @@ export default function App() {
       streamRef.current = stream;
 
       // 4. Connect to Gemini Live WebSocket with ephemeral token
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?access_token=${token}`;
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${token}`;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
