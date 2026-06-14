@@ -18,7 +18,7 @@ export default async function handler(req, res) {
 
   try {
     const response = await fetch(
-      "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+      "https://api.openai.com/v1/realtime?model=gpt-4o-realtime",
       {
         method: "POST",
         headers: {
