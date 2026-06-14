@@ -33,7 +33,7 @@ export default async function handler(req, res) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini-realtime-preview",
+        model: "gpt-4o-realtime-preview",
         voice: "shimmer",
         instructions: FIONA_INSTRUCTIONS,
         turn_detection: {

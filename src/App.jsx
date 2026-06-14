@@ -136,7 +136,7 @@ export default function App() {
 
       // 7. Send offer to OpenAI and get answer
       const sdpRes = await fetch(
-        "https://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview",
+        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
         {
           method: "POST",
           headers: {
