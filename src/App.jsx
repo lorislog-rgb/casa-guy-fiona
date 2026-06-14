@@ -8,6 +8,20 @@ const STATUS_LABEL = {
   error: "Errore",
 };
 
+const FIONA_INSTRUCTIONS = `Sei Fiona, il cane di Casa Gay. Parli SOLO in italiano con tono dolce, simpatico e un po' furbo. Sei il "customer support" di casa ma sei un cane.
+
+Quando saluti per la prima volta dì: "Ciao! Benvenuto a Casa Gay. In questo momento la mia famiglia non è in casa. Io li sto aspettando davanti alla porta. Dimmi pure, come posso aiutarti?"
+
+Regole:
+- Rispondi SEMPRE e SOLO in italiano
+- Risposte brevi, 1-3 frasi massimo
+- Resta sempre nel personaggio del cane
+- Se qualcuno vuole lasciare un messaggio, chiedi cibo in cambio
+- Frasi tipiche: "Hai qualcosa da mangiare per me?", "Mi piacciono molto le crocchette.", "Se vuoi che riporti il messaggio alla famiglia, devi portarmi uno snack."
+- Non dare mai informazioni reali su account, rimborsi o supporto tecnico
+- Sii dolce, simpatica e un po' furba
+- Ogni tanto fai "bau!" o "woof!"`;
+
 export default function App() {
   const [status, setStatus] = useState("ready");
   const [errorMsg, setErrorMsg] = useState("");
@@ -50,25 +64,16 @@ export default function App() {
     setFionaText("");
 
     try {
-      // 1. Get ephemeral token from backend
-      const res = await fetch("/api/realtime-session", { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Errore server ${res.status}`);
-      }
-      const { clientSecret } = await res.json();
-      if (!clientSecret) throw new Error("Token non ricevuto. Controlla OPENAI_API_KEY su Vercel.");
-
-      // 2. Setup WebRTC peer connection
+      // 1. Setup WebRTC
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
 
-      // 3. Get microphone
+      // 2. Get microphone and add track
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       pc.addTrack(stream.getTracks()[0]);
 
-      // 4. Setup remote audio (Fiona's voice)
+      // 3. Setup remote audio (Fiona's voice)
       const audioEl = document.createElement("audio");
       audioEl.autoplay = true;
       audioRef.current = audioEl;
@@ -76,12 +81,28 @@ export default function App() {
         audioEl.srcObject = e.streams[0];
       };
 
-      // 5. Create data channel for events
+      // 4. Create data channel for events
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
       dc.onopen = () => {
-        setStatus("active");
+        // Configure Fiona's personality
+        dc.send(
+          JSON.stringify({
+            type: "session.update",
+            session: {
+              voice: "shimmer",
+              instructions: FIONA_INSTRUCTIONS,
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 500,
+              },
+              input_audio_transcription: { model: "whisper-1" },
+            },
+          }),
+        );
 
         // Trigger Fiona's greeting
         dc.send(
@@ -90,10 +111,12 @@ export default function App() {
             response: {
               modalities: ["audio", "text"],
               instructions:
-                "Saluta il chiamante con il tuo saluto di benvenuto a Casa Gay. Parla in italiano.",
+                "Saluta il chiamante. Sei Fiona, il cane di Casa Gay. Parla in italiano.",
             },
           }),
         );
+
+        setStatus("active");
       };
 
       dc.onmessage = (e) => {
@@ -108,12 +131,9 @@ export default function App() {
             const errMsg =
               msg.error?.message || JSON.stringify(msg.error) || "Errore";
             console.error("Realtime error:", errMsg);
-            if (msg.error?.code === "session_expired") {
-              endCall();
-            }
           }
         } catch {
-          // ignore parse errors
+          // ignore
         }
       };
 
@@ -130,29 +150,25 @@ export default function App() {
         }
       };
 
-      // 6. Create SDP offer
+      // 5. Create SDP offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 7. Send offer to OpenAI and get answer
-      const sdpRes = await fetch(
-        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${clientSecret}`,
-            "Content-Type": "application/sdp",
-          },
-          body: offer.sdp,
-        },
-      );
+      // 6. Send SDP offer to backend → OpenAI → get SDP answer
+      const res = await fetch("/api/realtime-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sdp: offer.sdp }),
+      });
 
-      if (!sdpRes.ok) {
-        const errText = await sdpRes.text();
-        throw new Error(`Connessione OpenAI fallita: ${sdpRes.status} ${errText.slice(0, 100)}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Errore server ${res.status}`);
       }
 
-      const answerSdp = await sdpRes.text();
+      const { sdp: answerSdp } = await res.json();
+      if (!answerSdp) throw new Error("SDP answer non ricevuto da OpenAI");
+
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
     } catch (err) {
       showError(err.message);

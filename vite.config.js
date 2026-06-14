@@ -26,12 +26,12 @@ export default defineConfig(({ mode }) => {
               return;
             }
             try {
-              await readBody(req);
+              const body = JSON.parse(await readBody(req));
               const { default: handler } = await import(
                 "./api/realtime-session.js"
               );
               await handler(
-                { method: "POST" },
+                { method: "POST", body },
                 {
                   status: (code) => ({
                     json: (data) => {
