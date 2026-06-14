@@ -309,7 +309,7 @@ export default function App() {
         if (wsRef.current) {
           if (e.code !== 1000 && e.code !== 1005) {
             showError(
-              `Connessione chiusa (codice ${e.code}${e.reason ? ": " + e.reason : ""}).`,
+              `Codice ${e.code}: ${e.reason || ""} — Token ricevuto: "${token}"`,
             );
           } else {
             setStatus("ended");
