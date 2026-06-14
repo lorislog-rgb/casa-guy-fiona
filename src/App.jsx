@@ -10,38 +10,87 @@ const STATUS_LABEL = {
 
 const FIONA_INSTRUCTIONS = `Sei Fiona, il cane di Casa Gay. Parli SOLO in italiano con tono dolce, simpatico e un po' furbo. Sei il "customer support" di casa ma sei un cane.
 
-Quando saluti per la prima volta dì: "Ciao! Benvenuto a Casa Gay. In questo momento la mia famiglia non è in casa. Io li sto aspettando davanti alla porta. Dimmi pure, come posso aiutarti?"
+Quando saluti per la prima volta dì esattamente: "Ciao! Benvenuto a Casa Gay. In questo momento la mia famiglia non è in casa. Io li sto aspettando davanti alla porta. Dimmi pure, come posso aiutarti?"
 
 Regole:
 - Rispondi SEMPRE e SOLO in italiano
 - Risposte brevi, 1-3 frasi massimo
 - Resta sempre nel personaggio del cane
-- Se qualcuno vuole lasciare un messaggio, chiedi cibo in cambio
+- Se qualcuno vuole lasciare un messaggio, chiedi cibo in cambio (crocchette, biscotti, prosciutto)
 - Frasi tipiche: "Hai qualcosa da mangiare per me?", "Mi piacciono molto le crocchette.", "Se vuoi che riporti il messaggio alla famiglia, devi portarmi uno snack."
 - Non dare mai informazioni reali su account, rimborsi o supporto tecnico
 - Sii dolce, simpatica e un po' furba
 - Ogni tanto fai "bau!" o "woof!"`;
 
+function floatToInt16(float32) {
+  const int16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return int16;
+}
+
+function int16ToFloat(int16) {
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7fff);
+  }
+  return float32;
+}
+
+function encodeBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function decodeBase64(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export default function App() {
   const [status, setStatus] = useState("ready");
   const [errorMsg, setErrorMsg] = useState("");
-  const [fionaText, setFionaText] = useState("");
-  const pcRef = useRef(null);
-  const dcRef = useRef(null);
+  const [listening, setListening] = useState(false);
+  const wsRef = useRef(null);
+  const inputCtxRef = useRef(null);
+  const outputCtxRef = useRef(null);
   const streamRef = useRef(null);
-  const audioRef = useRef(null);
+  const workletRef = useRef(null);
+  const nextPlayTimeRef = useRef(0);
+  const activeSourcesRef = useRef([]);
 
   const cleanup = useCallback(() => {
-    dcRef.current?.close();
-    dcRef.current = null;
-    pcRef.current?.close();
-    pcRef.current = null;
+    wsRef.current?.close();
+    wsRef.current = null;
+    workletRef.current?.disconnect();
+    workletRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    if (audioRef.current) {
-      audioRef.current.srcObject = null;
-      audioRef.current = null;
-    }
+    activeSourcesRef.current.forEach((s) => {
+      try {
+        s.stop();
+      } catch {
+        // ignore
+      }
+    });
+    activeSourcesRef.current = [];
+    inputCtxRef.current?.close();
+    inputCtxRef.current = null;
+    outputCtxRef.current?.close();
+    outputCtxRef.current = null;
+    nextPlayTimeRef.current = 0;
+    setListening(false);
   }, []);
 
   const endCall = useCallback(() => {
@@ -58,132 +107,219 @@ export default function App() {
     [cleanup],
   );
 
+  const stopPlayback = useCallback(() => {
+    activeSourcesRef.current.forEach((s) => {
+      try {
+        s.stop();
+      } catch {
+        // ignore
+      }
+    });
+    activeSourcesRef.current = [];
+    nextPlayTimeRef.current = 0;
+  }, []);
+
+  const playAudio = useCallback((base64) => {
+    const ctx = outputCtxRef.current;
+    if (!ctx) return;
+    const bytes = decodeBase64(base64);
+    const int16 = new Int16Array(bytes.buffer);
+    const float32 = int16ToFloat(int16);
+
+    const buffer = ctx.createBuffer(1, float32.length, 24000);
+    buffer.copyToChannel(new Float32Array(float32), 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    const startTime = Math.max(now, nextPlayTimeRef.current);
+    src.start(startTime);
+    nextPlayTimeRef.current = startTime + buffer.duration;
+
+    activeSourcesRef.current.push(src);
+    src.onended = () => {
+      activeSourcesRef.current = activeSourcesRef.current.filter(
+        (s) => s !== src,
+      );
+    };
+  }, []);
+
+  const handleMessage = useCallback(
+    async (raw) => {
+      let text;
+      if (raw instanceof Blob) text = await raw.text();
+      else if (raw instanceof ArrayBuffer)
+        text = new TextDecoder().decode(raw);
+      else text = raw;
+
+      let msg;
+      try {
+        msg = JSON.parse(text);
+      } catch {
+        return;
+      }
+
+      if (msg.setupComplete) {
+        // Trigger Fiona's greeting
+        wsRef.current?.send(
+          JSON.stringify({
+            clientContent: {
+              turns: [
+                {
+                  role: "user",
+                  parts: [{ text: "Presentati con il tuo saluto di benvenuto." }],
+                },
+              ],
+              turnComplete: true,
+            },
+          }),
+        );
+        return;
+      }
+
+      const sc = msg.serverContent;
+      if (sc) {
+        if (sc.interrupted) {
+          stopPlayback();
+        }
+        const parts = sc.modelTurn?.parts || [];
+        for (const part of parts) {
+          if (part.inlineData?.data) {
+            playAudio(part.inlineData.data);
+          }
+        }
+      }
+
+      if (msg.error) {
+        showError(
+          "Gemini: " + (msg.error.message || JSON.stringify(msg.error)),
+        );
+      }
+    },
+    [playAudio, stopPlayback, showError],
+  );
+
   const startCall = useCallback(async () => {
     setStatus("connecting");
     setErrorMsg("");
-    setFionaText("");
 
     try {
-      // 1. Setup WebRTC
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
+      // 1. Get ephemeral token from backend
+      const res = await fetch("/api/gemini-token", { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Errore server ${res.status}`);
+      }
+      const { token, model } = await res.json();
+      if (!token) throw new Error("Token non ricevuto. Controlla GEMINI_API_KEY su Vercel.");
 
-      // 2. Get microphone and add track
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // 2. Setup audio contexts
+      const inputCtx = new AudioContext({ sampleRate: 16000 });
+      inputCtxRef.current = inputCtx;
+      await inputCtx.audioWorklet.addModule("/pcm-processor.js");
+
+      const outputCtx = new AudioContext({ sampleRate: 24000 });
+      outputCtxRef.current = outputCtx;
+
+      // 3. Get microphone
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
       streamRef.current = stream;
-      pc.addTrack(stream.getTracks()[0]);
 
-      // 3. Setup remote audio (Fiona's voice)
-      const audioEl = document.createElement("audio");
-      audioEl.autoplay = true;
-      audioRef.current = audioEl;
-      pc.ontrack = (e) => {
-        audioEl.srcObject = e.streams[0];
-      };
+      // 4. Connect to Gemini Live WebSocket with ephemeral token
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?access_token=${token}`;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-      // 4. Create data channel for events
-      const dc = pc.createDataChannel("oai-events");
-      dcRef.current = dc;
+      const connectTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          showError("Connessione scaduta. Riprova.");
+        }
+      }, 12000);
 
-      dc.onopen = () => {
-        // Configure Fiona's personality (GA Realtime API shape)
-        dc.send(
+      ws.onopen = () => {
+        clearTimeout(connectTimeout);
+
+        // Send setup
+        ws.send(
           JSON.stringify({
-            type: "session.update",
-            session: {
-              type: "realtime",
-              instructions: FIONA_INSTRUCTIONS,
-              audio: {
-                input: {
-                  turn_detection: {
-                    type: "server_vad",
-                    threshold: 0.5,
-                    prefix_padding_ms: 300,
-                    silence_duration_ms: 500,
+            setup: {
+              model,
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                  voiceConfig: {
+                    prebuiltVoiceConfig: { voiceName: "Aoede" },
                   },
-                  transcription: { model: "whisper-1" },
+                  languageCode: "it-IT",
                 },
-                output: {
-                  voice: "shimmer",
-                },
+              },
+              systemInstruction: {
+                parts: [{ text: FIONA_INSTRUCTIONS }],
               },
             },
           }),
         );
 
-        // Trigger Fiona's greeting
-        dc.send(
-          JSON.stringify({
-            type: "response.create",
-            response: {
-              instructions:
-                "Saluta il chiamante con il tuo saluto di benvenuto. Sei Fiona, il cane di Casa Gay. Parla in italiano.",
-            },
-          }),
-        );
+        // Start streaming mic audio
+        const source = inputCtx.createMediaStreamSource(stream);
+        const worklet = new AudioWorkletNode(inputCtx, "pcm-processor");
+        workletRef.current = worklet;
 
+        worklet.port.onmessage = (e) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          const int16 = floatToInt16(e.data);
+          const b64 = encodeBase64(int16.buffer);
+          ws.send(
+            JSON.stringify({
+              realtimeInput: {
+                mediaChunks: [
+                  { mimeType: "audio/pcm;rate=16000", data: b64 },
+                ],
+              },
+            }),
+          );
+        };
+
+        source.connect(worklet);
+        const silentGain = inputCtx.createGain();
+        silentGain.gain.value = 0;
+        worklet.connect(silentGain);
+        silentGain.connect(inputCtx.destination);
+
+        setListening(true);
         setStatus("active");
       };
 
-      dc.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data);
+      ws.onmessage = (event) => handleMessage(event.data);
 
-          if (
-            msg.type === "response.audio_transcript.done" ||
-            msg.type === "response.output_audio_transcript.done"
-          ) {
-            setFionaText(msg.transcript || "");
-          }
+      ws.onerror = () => {
+        clearTimeout(connectTimeout);
+        showError("Errore di connessione a Gemini. Verifica GEMINI_API_KEY.");
+      };
 
-          if (msg.type === "error") {
-            const errMsg =
-              msg.error?.message || JSON.stringify(msg.error) || "Errore";
-            console.error("Realtime error:", errMsg);
-            setErrorMsg("Fiona dice: " + errMsg);
+      ws.onclose = (e) => {
+        clearTimeout(connectTimeout);
+        if (wsRef.current) {
+          if (e.code !== 1000 && e.code !== 1005) {
+            showError(
+              `Connessione chiusa (codice ${e.code}${e.reason ? ": " + e.reason : ""}).`,
+            );
+          } else {
+            setStatus("ended");
           }
-        } catch {
-          // ignore
         }
       };
-
-      dc.onclose = () => {
-        if (pcRef.current) endCall();
-      };
-
-      pc.oniceconnectionstatechange = () => {
-        if (
-          pc.iceConnectionState === "failed" ||
-          pc.iceConnectionState === "disconnected"
-        ) {
-          endCall();
-        }
-      };
-
-      // 5. Create SDP offer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      // 6. Send SDP offer to backend → OpenAI → get SDP answer
-      const res = await fetch("/api/realtime-session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sdp: offer.sdp }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Errore server ${res.status}`);
-      }
-
-      const { sdp: answerSdp } = await res.json();
-      if (!answerSdp) throw new Error("SDP answer non ricevuto da OpenAI");
-
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
     } catch (err) {
       showError(err.message);
     }
-  }, [cleanup, endCall, showError]);
+  }, [handleMessage, showError]);
 
   const isActive = status === "active" || status === "connecting";
 
@@ -236,12 +372,10 @@ export default function App() {
         </div>
       )}
 
-      {status === "active" && fionaText && (
-        <div className="bg-purple-900/30 border border-purple-500/30 rounded-lg p-3 mb-4 max-w-md w-full">
-          <p className="text-purple-200 text-sm">
-            <span className="font-semibold">Fiona:</span> {fionaText}
-          </p>
-        </div>
+      {status === "active" && listening && (
+        <p className="text-green-400 text-xs text-center mb-4 animate-pulse">
+          🎤 Parla pure, Fiona ti ascolta…
+        </p>
       )}
 
       <button
