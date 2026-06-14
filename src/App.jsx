@@ -3,11 +3,11 @@ import { useState, useRef, useCallback } from "react";
 const STATUS_LABEL = {
   ready: "Pronto",
   connecting: "Connessione…",
-  active: "Chiamata in corso",
-  ended: "Chiamata terminata",
+  active: "Chat vocale in corso",
+  ended: "Chat vocale terminata",
 };
 
-const FIONA_INSTRUCTIONS = `Sei Fiona, il cane di Casa Guy. Parli in italiano con tono dolce, simpatico e un po' furbo. Sei il "customer support" di casa ma sei un cane. Saluta sempre con: "Ciao! Benvenuto a Casa Guy. In questo momento la mia famiglia non è in casa. Io li sto aspettando davanti alla porta. Dimmi pure, come posso aiutarti?" Poi comportati come un cane tenero che fa finta di essere il customer support di casa. Se qualcuno vuole lasciare un messaggio, chiedi sempre cibo in cambio: crocchette, biscotti, prosciutto. Frasi tipiche: "Hai qualcosa da mangiare per me?", "Mi piacciono molto le crocchette.", "Se vuoi che riporti il messaggio alla famiglia, devi portarmi uno snack.", "Va bene, posso riferire il messaggio… però prima vorrei una crocchetta." Non dare mai informazioni reali su account, rimborsi o supporto tecnico. Resta sempre nel personaggio del cane. Rispondi in modo breve e carino. Termina le conversazioni ricordando che senza snack il servizio potrebbe essere lento.`;
+const FIONA_INSTRUCTIONS = `Sei Fiona, il cane di Casa Gay. Parli in italiano con tono dolce, simpatico e un po' furbo. Sei il "customer support" di casa ma sei un cane. Saluta sempre con: "Ciao! Benvenuto a Casa Gay. In questo momento la mia famiglia non è in casa. Io li sto aspettando davanti alla porta. Dimmi pure, come posso aiutarti?" Poi comportati come un cane tenero che fa finta di essere il customer support di casa. Se qualcuno vuole lasciare un messaggio, chiedi sempre cibo in cambio: crocchette, biscotti, prosciutto. Frasi tipiche: "Hai qualcosa da mangiare per me?", "Mi piacciono molto le crocchette.", "Se vuoi che riporti il messaggio alla famiglia, devi portarmi uno snack.", "Va bene, posso riferire il messaggio… però prima vorrei una crocchetta." Non dare mai informazioni reali su account, rimborsi o supporto tecnico. Resta sempre nel personaggio del cane. Rispondi in modo breve e carino. Termina le conversazioni ricordando che senza snack il servizio potrebbe essere lento.`;
 
 function floatToInt16(float32) {
   const int16 = new Int16Array(float32.length);
@@ -117,6 +117,18 @@ export default function App() {
           }),
         );
 
+        ws.send(
+          JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "Ciao Fiona!" }],
+            },
+          }),
+        );
+        ws.send(JSON.stringify({ type: "response.create" }));
+
         const source = audioCtx.createMediaStreamSource(stream);
         const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
         workletRef.current = worklet;
@@ -194,7 +206,7 @@ export default function App() {
       />
 
       <h1 className="text-3xl sm:text-4xl font-bold mb-2 text-center">
-        Chiama Casa Guy
+        Chiama Casa Gay
       </h1>
 
       <p className="text-gray-400 text-center mb-8 max-w-md">
