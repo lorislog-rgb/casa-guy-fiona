@@ -72,7 +72,10 @@ export default function App() {
   const isSpeaking = conversation.isSpeaking;
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center px-4 py-12">
+    <div className="relative min-h-screen flex flex-col items-center justify-center px-4 py-12 overflow-hidden">
+      <BonesBackground />
+
+      <div className="relative z-10 flex flex-col items-center w-full">
       <img
         src="/fiona.jpg"
         alt="Fiona"
@@ -138,6 +141,55 @@ export default function App() {
       >
         {isActive ? "Termina" : "Chiama Fiona"}
       </button>
+      </div>
     </div>
+  );
+}
+
+function BonesBackground() {
+  // Decorative dog bones scattered around the edges to fill the background.
+  const bones = [
+    { top: "8%", left: "6%", size: 52, rotate: -25, opacity: 0.12 },
+    { top: "24%", left: "14%", size: 34, rotate: 40, opacity: 0.1 },
+    { top: "62%", left: "8%", size: 60, rotate: 15, opacity: 0.13 },
+    { top: "82%", left: "18%", size: 38, rotate: -50, opacity: 0.1 },
+    { top: "44%", left: "3%", size: 30, rotate: 70, opacity: 0.09 },
+    { top: "10%", right: "8%", size: 46, rotate: 35, opacity: 0.12 },
+    { top: "30%", right: "5%", size: 32, rotate: -30, opacity: 0.1 },
+    { top: "58%", right: "10%", size: 56, rotate: -15, opacity: 0.13 },
+    { top: "78%", right: "6%", size: 40, rotate: 55, opacity: 0.1 },
+    { top: "46%", right: "16%", size: 28, rotate: 10, opacity: 0.08 },
+  ];
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-0 select-none">
+      {bones.map((b, i) => (
+        <Bone
+          key={i}
+          style={{
+            position: "absolute",
+            top: b.top,
+            left: b.left,
+            right: b.right,
+            width: b.size,
+            height: b.size * 0.6,
+            transform: `rotate(${b.rotate}deg)`,
+            opacity: b.opacity,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function Bone({ style }) {
+  return (
+    <svg viewBox="0 0 100 60" fill="#ffffff" style={style} aria-hidden="true">
+      <circle cx="20" cy="20" r="17" />
+      <circle cx="20" cy="40" r="17" />
+      <circle cx="80" cy="20" r="17" />
+      <circle cx="80" cy="40" r="17" />
+      <rect x="18" y="21" width="64" height="18" rx="9" />
+    </svg>
   );
 }
