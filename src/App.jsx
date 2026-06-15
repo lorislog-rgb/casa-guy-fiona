@@ -76,7 +76,7 @@ export default function App() {
       <img
         src="/fiona.jpg"
         alt="Fiona"
-        className="w-48 h-48 sm:w-56 sm:h-56 rounded-full object-cover shadow-lg shadow-purple-500/20 mb-8"
+        className="w-48 h-48 sm:w-56 sm:h-56 rounded-full object-cover object-top shadow-lg shadow-purple-500/20 mb-8"
       />
 
       <h1 className="text-3xl sm:text-4xl font-bold mb-2 text-center">
